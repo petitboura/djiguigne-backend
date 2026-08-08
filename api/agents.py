@@ -645,6 +645,14 @@ class AgentDetailPublic(BaseModel):
     # dit au frontend d'afficher l'entrée "Matières" (écrire du contenu /
     # entrer un code) dans le chat de cet agent précis.
     contenu_dynamique_par_matiere: bool = False
+    # Ajouté 08/08/2026 : ce champ existait déjà dans ui_config (voir
+    # ModifierAgentPayload.placeholder_saisie, écrit et sauvegardé
+    # correctement depuis le 2026-07-14) mais n'était jamais exposé par ce
+    # modèle public -- la valeur configurée par le créateur était donc
+    # enregistrée en base mais jamais lue par le chat, qui retombait
+    # systématiquement sur un texte générique côté frontend (voir
+    # BarreDeSaisie.tsx). Corrigé ici.
+    placeholder_saisie: str = "Pose ta question..."
     # Ajouté 06/08/2026 (demande Bourama) : affichage du bouton "Sans
     # enseignant" dans la barre de saisie, piloté nous-mêmes en base
     # (indépendant de contenu_dynamique_par_matiere) -- pas encore
@@ -710,6 +718,7 @@ def obtenir_agent_public(agent_id: str):
         icone_page=_ui_config.get("icone_page", "🤖"),
         titre_accueil=_ui_config.get("titre_accueil") or AgentDetailPublic.model_fields["titre_accueil"].default,
         sous_titre_accueil=_ui_config.get("sous_titre_accueil") or AgentDetailPublic.model_fields["sous_titre_accueil"].default,
+        placeholder_saisie=_ui_config.get("placeholder_saisie") or AgentDetailPublic.model_fields["placeholder_saisie"].default,
         image_vitrine_url=ligne.get("image_vitrine_url"),
         icone_url=ligne.get("icone_url"),
         description=ligne.get("description") or "",
@@ -864,6 +873,7 @@ def mettre_a_jour_vitrine(
         icone_page=_ui_config.get("icone_page", "🤖"),
         titre_accueil=_ui_config.get("titre_accueil") or AgentDetailPublic.model_fields["titre_accueil"].default,
         sous_titre_accueil=_ui_config.get("sous_titre_accueil") or AgentDetailPublic.model_fields["sous_titre_accueil"].default,
+        placeholder_saisie=_ui_config.get("placeholder_saisie") or AgentDetailPublic.model_fields["placeholder_saisie"].default,
         image_vitrine_url=ligne.get("image_vitrine_url"),
         icone_url=ligne.get("icone_url"),
         description=ligne.get("description") or "",
@@ -1378,6 +1388,23 @@ def modifier_agent(
         execution_normalisee = payload.execution.strip() or None
         _valider_et_verifier_disponibilite_execution(execution_normalisee, agent_id_a_exclure=agent_id)
         mise_a_jour["execution"] = execution_normalisee
+
+    # Exclusivité entre les 6 catégories (08/08/2026, bouton "Changer de
+    # catégorie/spécialité" du dashboard) : un agent n'appartient qu'à UNE
+    # catégorie à la fois, même règle qu'à la création -- mais rien ici ne
+    # l'imposait, un agent pouvait en théorie accumuler matiere ET metier
+    # si les deux étaient un jour envoyés séparément. Dès que la requête
+    # change l'une des 6, on vide les 5 autres (sauf celles que CETTE
+    # MÊME requête fournit aussi explicitement, pour ne rien casser si un
+    # futur appelant en envoie plusieurs à la fois délibérément).
+    _champs_categorie = ["matiere", "langue_africaine", "metier", "filiere", "domaine", "execution"]
+    _champs_categorie_fournis = [c for c in _champs_categorie if getattr(payload, c) is not None]
+    if _champs_categorie_fournis:
+        for _champ in _champs_categorie:
+            if _champ not in _champs_categorie_fournis:
+                mise_a_jour[_champ] = None
+        if "matiere" not in _champs_categorie_fournis:
+            mise_a_jour["matiere_detail"] = None
 
     if not mise_a_jour:
         raise erreur_api(422, "RIEN_A_MODIFIER")
