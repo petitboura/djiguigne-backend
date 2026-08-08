@@ -174,6 +174,11 @@ MESSAGES_FR: dict[str, str] = {
     "ENSEIGNANT_ID_REQUIS_POUR_ETUDIANT": "Choisis ton enseignant pour continuer.",
     "ETABLISSEMENT_ID_REQUIS_POUR_ENSEIGNANT": "Choisis ton établissement pour continuer.",
     "ACTION_RESERVEE_A_CE_ROLE": "Cette action n'est pas disponible pour ton rôle.",
+    # Invitations Class GPT (2026-08-08, partie 4)
+    "AUCUNE_INVITATION_ACTIVE": "Aucun code actif pour l'instant, génère-en un.",
+    "CODE_MANQUANT": "Entre un code pour continuer.",
+    "NOM_AFFICHE_MANQUANT": "Entre ton nom pour continuer.",
+    "CODE_INVITATION_INVALIDE": "Ce code d'invitation n'est pas valide.",
     "PAS_LE_DROIT_SUR_CET_AGENT": "Tu n'as pas le droit de modifier cet agent.",
     "DESTINATAIRE_INTROUVABLE": "Destinataire introuvable.",
     "MESSAGE_VIDE": "Le message ne peut pas être vide.",

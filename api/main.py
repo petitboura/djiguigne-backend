@@ -35,6 +35,7 @@ from api.droits_agent import router as droits_agent_router
 from api.droits_agent import router_registre as registre_outils_router
 from api.bibliotheque_utilisateur import router as bibliotheque_utilisateur_router
 from api.roles import router as roles_router
+from api.invitations_classgpt import router as invitations_classgpt_router
 from api.contenu_dynamique_matiere import router_enseignant as contenu_matiere_enseignant_router
 from api.contenu_dynamique_matiere import router_etudiant as contenu_matiere_etudiant_router
 from api.contenu_dynamique_matiere import router_liste_agents as contenu_matiere_liste_agents_router
@@ -204,6 +205,7 @@ app.include_router(droits_agent_router)
 app.include_router(registre_outils_router)
 app.include_router(bibliotheque_utilisateur_router)
 app.include_router(roles_router)
+app.include_router(invitations_classgpt_router)
 app.include_router(contenu_matiere_enseignant_router)
 app.include_router(contenu_matiere_etudiant_router)
 app.include_router(contenu_matiere_liste_agents_router)
