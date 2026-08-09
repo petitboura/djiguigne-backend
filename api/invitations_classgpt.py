@@ -243,13 +243,23 @@ class RootPayload(BaseModel):
 
 
 @router.post("/etablissement-racine", response_model=RejoindreReponse, status_code=201)
-def creer_etablissement_racine(payload: RootPayload, request: Request, utilisateur=Depends(utilisateur_courant)):
+def creer_etudiant_autonome(payload: RootPayload, request: Request, utilisateur=Depends(utilisateur_courant)):
     """
-    Premier compte d'un établissement sur Class GPT : personne pour
-    l'inviter, donc pas de code -- ce point n'était pas dans le brief
-    d'origine, je le pose explicitement plutôt que de le deviner (voir
-    échange avec Bourama). Devient "etablissement" directement, sans
-    rattachement (etablissement_id/enseignant_id restent NULL).
+    Inscription libre sur Class GPT (sans code d'invitation) : devient
+    "etudiant" directement, sans rattachement à un enseignant
+    (enseignant_id reste NULL) -- décision Bourama du 09/08, remplace le
+    comportement d'origine (rôle "etablissement" par défaut). Le nom de
+    la route (/etablissement-racine) et de l'action journalisée restent
+    inchangés pour ne pas casser de compatibilité ni retoucher inutilement
+    lib/invitations.ts côté frontend -- seul le rôle attribué change.
+
+    Point qui n'était pas dans le brief d'origine, posé explicitement
+    plutôt que deviné (voir échange avec Bourama) : un compte "etudiant"
+    sans enseignant_id est un cas nouveau, jusqu'ici un étudiant était
+    toujours rattaché via /rejoindre (code reçu d'un enseignant/
+    établissement). Aucune fonctionnalité existante (mon-equipe,
+    diffusion...) ne suppose enseignant_id non-NULL côté étudiant --
+    vérifié dans api/roles.py avant ce changement.
     """
     profil_existant = _lire_profil_role(utilisateur.id)
     if profil_existant and profil_existant.get("role"):
@@ -258,7 +268,7 @@ def creer_etablissement_racine(payload: RootPayload, request: Request, utilisate
     if not payload.nom_affiche.strip():
         raise erreur_api(400, "NOM_AFFICHE_MANQUANT")
 
-    ligne_maj = {"role": "etablissement", "nom_affiche": payload.nom_affiche.strip()}
+    ligne_maj = {"role": "etudiant", "nom_affiche": payload.nom_affiche.strip()}
 
     try:
         deja = supabase.table("profiles").select("slug").eq("user_id", utilisateur.id).maybe_single().execute()
@@ -276,15 +286,15 @@ def creer_etablissement_racine(payload: RootPayload, request: Request, utilisate
             ligne_maj["slug"] = generer_id_depuis_nom(utilisateur.id[:8]) or utilisateur.id[:8]
             supabase.table("profiles").insert(ligne_maj).execute()
     except Exception as e:
-        logging.error(f"ERREUR SUPABASE (création établissement racine {utilisateur.id}) : {e}")
+        logging.error(f"ERREUR SUPABASE (création étudiant autonome {utilisateur.id}) : {e}")
         raise erreur_api(500, "ERREUR_INCONNUE")
 
     journaliser(
-        action="etablissement_racine.cree",
+        action="etudiant_autonome.cree",
         user_id=utilisateur.id,
         cible_type="profile",
         cible_id=utilisateur.id,
         details={},
         request=request,
     )
-    return RejoindreReponse(role="etablissement", agent_id=AGENT_PAR_ROLE["etablissement"])
+    return RejoindreReponse(role="etudiant", agent_id=AGENT_PAR_ROLE["etudiant"])
