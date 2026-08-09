@@ -20,8 +20,19 @@ BUCKET = "documents-agents"
 
 
 def upload_document(file_path, file_name):
+    # Corrigé le 09/08/2026 (Bourama : un PDF uploadé s'ouvrait comme du
+    # texte brut -- "%PDF-1.5 ... obj ... endobj" -- au lieu de s'afficher
+    # dans la visionneuse PDF du navigateur). Cause : sans file_options,
+    # le client Python Supabase envoie Content-Type: text/plain par
+    # défaut (confirmé dans la doc officielle storage-py), quel que soit
+    # le contenu réel du fichier -- le PDF était bien stocké intact,
+    # juste servi avec le mauvais en-tête. upsert=true nécessaire en plus
+    # : réindexer un document déjà présent (même nom_stockage) provoquait
+    # sinon une erreur "Asset Already Exists" au lieu de remplacer.
     with open(file_path, "rb") as f:
-        supabase.storage.from_(BUCKET).upload(file_name, f)
+        supabase.storage.from_(BUCKET).upload(
+            file_name, f, file_options={"content-type": "application/pdf", "upsert": "true"}
+        )
     print(f"{file_name} uploadé avec succès")
 
 
