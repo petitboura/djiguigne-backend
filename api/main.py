@@ -151,10 +151,19 @@ ORIGINES_AUTORISEES = [
 # retoucher ce fichier a chaque nouveau lien.
 MOTIF_ORIGINES_VERCEL = r"https://djiguign[a-z0-9\-]*\.vercel\.app"
 
+# Idem pour Class GPT (2026-08-09) -- projet Vercel séparé
+# (classgpt-frontend), URL de prévisualisation différente à chaque
+# déploiement (ex. classgpt-frontend-bld5bmptn-petitbouras-projects.
+# vercel.app). Correctif : l'absence de ce motif faisait échouer TOUTE
+# requête depuis ce frontend avec "Failed to fetch" côté navigateur
+# (bloqué par CORS avant même que la requête parte), pas une erreur
+# d'API -- rien à voir avec une variable d'environnement manquante.
+MOTIF_ORIGINES_CLASSGPT = r"https://classgpt-frontend[a-z0-9\-]*\.vercel\.app"
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ORIGINES_AUTORISEES,
-    allow_origin_regex=MOTIF_ORIGINES_VERCEL,
+    allow_origin_regex=f"({MOTIF_ORIGINES_VERCEL}|{MOTIF_ORIGINES_CLASSGPT})",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
