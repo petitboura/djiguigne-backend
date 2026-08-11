@@ -2652,9 +2652,47 @@ def chat(message_utilisateur=None, historique=None, user_id=None, reprise=None, 
     # boucle silencieuse pour l'utilisateur). Distinct de outil_force=None
     # normal : ici on VEUT explicitement zéro outil, pas "laisse le routeur
     # décider".
+    # Perf (10/08, demande Bourama : "avant c'était quasi instantané") :
+    # le routeur d'outils est un appel LLM séparé et complet (voir
+    # _router_outils), payé en SÉQUENCE avant même de commencer à
+    # construire le prompt de la vraie réponse -- gros ajout de latence
+    # sur quasi tous les messages texte normaux. Dans l'écrasante
+    # majorité des cas, le routeur ne suggère RIEN (voir ses instructions :
+    # "liste vide si rien n'est pertinent", conçu pour rester silencieux
+    # sauf besoin réel), auquel cas le prompt qu'on aurait construit sans
+    # lui est de toute façon exactement le bon. On lance donc le routeur
+    # ET la construction "optimiste" du prompt (comme si aucun outil
+    # n'était suggéré, cas normal AVANT ce correctif) EN PARALLÈLE :
+    # - routeur muet (cas normal) -> on utilise directement ce qui a déjà
+    #   été calculé en parallèle, latence du routeur totalement absorbée.
+    # - routeur_outils_auto=false (comportement bouton) -> retour
+    #   immédiat avec l'événement outils_suggeres comme avant, le travail
+    #   optimiste est simplement jeté (rien de cassé, coût négligeable).
+    # - routeur_outils_auto=true ET des outils sont suggérés (seul cas où
+    #   outil_force change réellement) -> le prompt optimiste ne convient
+    #   plus, on le recalcule avec le bon outil_force, exactement comme
+    #   avant ce correctif (donc jamais plus lent que l'ancien
+    #   comportement dans ce cas rare, seulement dans les cas fréquents
+    #   où ça ne change rien).
+    outils_suggeres = []
+    routeur_auto = False
     if not outil_force and not ignorer_suggestion_outils and message_utilisateur and not image_url and not images_base64:
-        outils_disponibles_agent, _ = lister_outils_autorises_pour_agent(get_secret, user_id, agent_id)
-        outils_suggeres = _router_outils(message_utilisateur, outils_disponibles_agent, historique)
+        def _tache_routeur():
+            outils_disponibles_agent, _ = lister_outils_autorises_pour_agent(get_secret, user_id, agent_id)
+            return _router_outils(message_utilisateur, outils_disponibles_agent, historique)
+
+        def _tache_prompt_optimiste():
+            outils_mcp, table_routage = lister_tous_les_outils(get_secret, user_id, agent_id, None)
+            system_final = _construire_system_prompt(message_utilisateur, agent_id, user_id, longueur_reponse, fuseau_horaire, recherche_forcee, None, sans_enseignant)
+            return outils_mcp, table_routage, system_final
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            f_routeur = executor.submit(_tache_routeur)
+            f_optimiste = executor.submit(_tache_prompt_optimiste)
+        outils_suggeres = f_routeur.result()
+        outils_mcp, table_routage, system_final = f_optimiste.result()
+        outil_force_verifie = None
+
         if outils_suggeres:
             # routeur_outils_auto (03/08, demande Bourama, agent par agent) :
             # colonne sur `agents`, false par defaut. Si true pour CET agent,
@@ -2673,10 +2711,19 @@ def chat(message_utilisateur=None, historique=None, user_id=None, reprise=None, 
                 routeur_auto = False
 
             if routeur_auto:
+                # Prompt optimiste invalide (calculé avec outil_force=None) :
+                # DOIT être explicitement jeté, sinon le bloc plus bas
+                # (`if system_final is None`) le laisserait passer tel
+                # quel malgré outil_force mis à jour juste en dessous --
+                # seul cas où on repaie le coût séquentiel, exactement
+                # comme avant ce correctif.
                 outil_force = outils_suggeres
+                outils_mcp = table_routage = system_final = None
             else:
                 yield {"type": "outils_suggeres", "outils": outils_suggeres}
                 return
+    else:
+        outils_mcp = table_routage = system_final = None  # recalculés ci-dessous dans tous les autres cas
 
     # CORRECTION (29/07, Bourama) : la liste réelle d'outils (celle qui
     # part dans tools=... vers Groq, filtrée par autorisation agent en
@@ -2689,15 +2736,16 @@ def chat(message_utilisateur=None, historique=None, user_id=None, reprise=None, 
     # prêt à être appelé" -- contradiction qui pouvait pousser le modèle à
     # halluciner un faux appel (bloc TOOL_CODE) plutôt que d'utiliser un
     # vrai outil absent de son schéma technique réel.
-    if image_url or images_base64:
-        # Chemin image = Gemini, aucun outil MCP jamais utilisé ici (voir
-        # plus bas) -- inutile d'interroger les serveurs MCP pour rien.
-        outils_mcp, table_routage = [], {}
-        outil_force_verifie = outil_force
-    else:
-        outils_mcp, table_routage = lister_tous_les_outils(get_secret, user_id, agent_id, outil_force)
-        outil_force_verifie = [o["function"]["name"] for o in outils_mcp] if outil_force else outil_force
-    system_final = _construire_system_prompt(message_utilisateur, agent_id, user_id, longueur_reponse, fuseau_horaire, recherche_forcee, outil_force_verifie, sans_enseignant)
+    if system_final is None:
+        if image_url or images_base64:
+            # Chemin image = Gemini, aucun outil MCP jamais utilisé ici (voir
+            # plus bas) -- inutile d'interroger les serveurs MCP pour rien.
+            outils_mcp, table_routage = [], {}
+            outil_force_verifie = outil_force
+        else:
+            outils_mcp, table_routage = lister_tous_les_outils(get_secret, user_id, agent_id, outil_force)
+            outil_force_verifie = [o["function"]["name"] for o in outils_mcp] if outil_force else outil_force
+        system_final = _construire_system_prompt(message_utilisateur, agent_id, user_id, longueur_reponse, fuseau_horaire, recherche_forcee, outil_force_verifie, sans_enseignant)
 
     if localisation and localisation.get("latitude") is not None and localisation.get("longitude") is not None:
         # Contexte "système/environnement" (2026-07-20) : position GPS
