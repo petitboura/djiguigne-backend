@@ -1357,28 +1357,32 @@ def _construire_system_prompt(message_utilisateur, agent_id, user_id=None, longu
     #
     # Tous les autres agents de la plateforme passent par
     # get_system_prompt() comme avant, aucune régression.
-    if agent_a_contenu_dynamique(agent_id):
-        system_prompt = resoudre_system_prompt_matiere(message_utilisateur, agent_id, user_id, sans_enseignant)
-    else:
-        system_prompt = _charger_prompt_personnalise(agent_id, user_id) or get_system_prompt(agent_id)
-
-    # Perf (10/08, demande Bourama : "qu'est-ce qui se charge à chaque
-    # question, rends-le le plus rapide possible") : ces 4 lectures sont
-    # indépendantes les unes des autres (aucune ne dépend du résultat
-    # d'une autre) mais partaient jusqu'ici en SÉQUENCE -- chacune payait
-    # son propre aller-retour réseau vers Supabase/Gemini l'une après
-    # l'autre, avant même le premier appel au LLM. Même pattern que
-    # get_prompts/get_documents dans core/retriever.py:chercher_candidats
-    # (déjà parallélisées en interne) : ici on parallélise un niveau
-    # au-dessus, chercher_candidats inclus. Résultats identiques à avant,
-    # juste calculés en même temps plutôt que les uns après les autres.
+    # Perf (10/08, demande Bourama : "l'assemblage du system prompt") :
+    # system_prompt (ligne suivante) ne dépend d'AUCUNE des 4 lectures
+    # ci-dessous (candidats/resume_memoire/profil_utilisateur/
+    # comportements_etudiant) -- pourtant elle partait avant elles, en
+    # séquence. Pour Nitrux (agent_a_contenu_dynamique=True),
+    # resoudre_system_prompt_matiere peut en plus déclencher un SECOND
+    # appel LLM séparé (_choisir_matiere, routeur de matière -- même
+    # coût qu'un appel LLM complet, voir core/contenu_dynamique_matiere.py),
+    # en plus du routeur d'outils déjà parallélisé côté chat(). Intégrée
+    # ici au même ThreadPoolExecutor que les 4 autres lectures : sa
+    # latence est maintenant absorbée avec elles au lieu de s'ajouter
+    # avant. Même valeur retournée qu'avant, juste calculée en même
+    # temps.
     with concurrent.futures.ThreadPoolExecutor() as executor:
+        f_system_prompt = (
+            executor.submit(resoudre_system_prompt_matiere, message_utilisateur, agent_id, user_id, sans_enseignant)
+            if agent_a_contenu_dynamique(agent_id)
+            else executor.submit(lambda: _charger_prompt_personnalise(agent_id, user_id) or get_system_prompt(agent_id))
+        )
         f_candidats = executor.submit(chercher_candidats, message_utilisateur, agent_id=agent_id)
         f_resume = executor.submit(_charger_resume_memoire, user_id)
         f_profil = executor.submit(_charger_profil_utilisateur, agent_id, user_id)
         f_comportements = (
             executor.submit(lister_comportements_etudiant, agent_id, user_id) if user_id else None
         )
+    system_prompt = f_system_prompt.result()
     candidats = f_candidats.result()
     resume_memoire = f_resume.result()
     profil_utilisateur = f_profil.result()
