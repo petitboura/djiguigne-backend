@@ -14,15 +14,22 @@ de vérification de rôle ici, volontairement.
 """
 
 import logging
+import os
 import secrets
 import string
+import sys
+import tempfile
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from pydantic import BaseModel
 
 from api.auth import utilisateur_courant, supabase
 from api.journal import journaliser
 from core.erreurs import erreur_api
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "core"))
+from bibliotheque_fichiers import enregistrer_fichier, enregistrer_lien  # noqa: E402
+from bibliotheque_rag import indexer_pdf_bibliotheque  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 
@@ -380,3 +387,275 @@ def activer_rattachement(agent_id: str, contenu_id: str, utilisateur=Depends(uti
     except Exception as e:
         logging.error(f"ERREUR SUPABASE (activation rattachement {contenu_id}) : {e}")
         raise erreur_api(500, "ERREUR_INCONNUE")
+
+
+class Receveur(BaseModel):
+    user_id: str
+    nom_affiche: str
+    surnom: str | None = None
+    actif: bool
+
+
+@router_enseignant.get("/{contenu_id}/receveurs", response_model=list[Receveur])
+def lister_receveurs(agent_id: str, contenu_id: str, utilisateur=Depends(utilisateur_courant)):
+    """
+    Qui a entré MON code pour cette matière précise -- 09/08, demande
+    Bourama ("Class GPT": plus de rôle enseignant/étudiant, juste "tu
+    génères un code ou tu en entres un"). N'existait pas encore : jusqu'ici
+    seul l'étudiant pouvait lister SES rattachements (lister_mes_rattachements
+    ci-dessus), rien côté auteur du contenu pour voir qui l'a débloqué.
+    Vérifie que le contenu appartient bien à l'appelant avant de renvoyer
+    quoi que ce soit (pas de fuite vers un contenu_id d'un autre compte).
+    Actif ou non : quelqu'un qui a débloqué puis basculé sur un autre
+    enseignant pour la même matière (voir activer_rattachement) reste
+    listé ici -- il a bien "entré ce code" à un moment donné.
+    """
+    try:
+        contenu = (
+            supabase.table("contenus_par_matiere")
+            .select("id")
+            .eq("id", contenu_id)
+            .eq("agent_id", agent_id)
+            .eq("enseignant_id", utilisateur.id)
+            .maybe_single()
+            .execute()
+        )
+    except Exception as e:
+        logging.error(f"ERREUR SUPABASE (vérification propriété contenu {contenu_id}) : {e}")
+        raise erreur_api(500, "ERREUR_INCONNUE")
+    if not contenu or not contenu.data:
+        raise erreur_api(404, "CONTENU_INTROUVABLE")
+
+    try:
+        res = (
+            supabase.table("rattachements_par_matiere")
+            .select("etudiant_id, surnom, actif")
+            .eq("contenu_id", contenu_id)
+            .execute()
+        )
+    except Exception as e:
+        logging.error(f"ERREUR SUPABASE (lecture receveurs {contenu_id}) : {e}")
+        raise erreur_api(500, "ERREUR_INCONNUE")
+
+    lignes = res.data or []
+    if not lignes:
+        return []
+
+    ids = [l["etudiant_id"] for l in lignes]
+    try:
+        profils = (
+            supabase.table("profiles").select("user_id, nom_affiche").in_("user_id", ids).execute()
+        )
+    except Exception as e:
+        logging.error(f"ERREUR SUPABASE (lecture profils receveurs {contenu_id}) : {e}")
+        profils = None
+    noms = {p["user_id"]: p.get("nom_affiche") for p in (profils.data if profils else [])}
+
+    return [
+        Receveur(
+            user_id=l["etudiant_id"],
+            nom_affiche=noms.get(l["etudiant_id"]) or "Sans nom",
+            surnom=l.get("surnom"),
+            actif=l["actif"],
+        )
+        for l in lignes
+    ]
+
+
+TYPES_DIFFUSION_AUTORISES = {
+    "application/pdf",
+    "image/jpeg", "image/png", "image/webp",
+    "audio/mpeg", "audio/wav", "audio/ogg", "audio/mp4",
+    "video/mp4", "video/webm", "video/quicktime",
+}
+TAILLE_MAX_DIFFUSION_OCTETS = 50 * 1024 * 1024  # 50 Mo, même limite que la bibliothèque perso
+
+
+class ResultatDiffusionMatiere(BaseModel):
+    diffuse_a: int
+    total_receveurs: int
+    echecs: list[str]
+
+
+def _receveurs_de(contenu_id: str, utilisateur_id: str, agent_id: str) -> list[str]:
+    """Vérifie la propriété du contenu et renvoie les user_id de tous ses
+    receveurs (actifs ou non, voir lister_receveurs ci-dessus)."""
+    try:
+        contenu = (
+            supabase.table("contenus_par_matiere")
+            .select("id")
+            .eq("id", contenu_id)
+            .eq("agent_id", agent_id)
+            .eq("enseignant_id", utilisateur_id)
+            .maybe_single()
+            .execute()
+        )
+    except Exception as e:
+        logging.error(f"ERREUR SUPABASE (vérification propriété contenu {contenu_id} avant diffusion) : {e}")
+        raise erreur_api(500, "ERREUR_INCONNUE")
+    if not contenu or not contenu.data:
+        raise erreur_api(404, "CONTENU_INTROUVABLE")
+
+    try:
+        res = (
+            supabase.table("rattachements_par_matiere")
+            .select("etudiant_id")
+            .eq("contenu_id", contenu_id)
+            .execute()
+        )
+    except Exception as e:
+        logging.error(f"ERREUR SUPABASE (lecture receveurs {contenu_id} avant diffusion) : {e}")
+        raise erreur_api(500, "ERREUR_INCONNUE")
+    return [l["etudiant_id"] for l in (res.data or [])]
+
+
+@router_enseignant.post("/{contenu_id}/diffuser", response_model=ResultatDiffusionMatiere, status_code=201)
+async def diffuser_document_matiere(
+    agent_id: str,
+    contenu_id: str,
+    request: Request,
+    fichier: UploadFile = File(...),
+    titre: str = Form(None),
+    description: str = Form(None),
+    utilisateur=Depends(utilisateur_courant),
+):
+    """
+    Diffuse un fichier à tous ceux qui ont entré MON code pour cette
+    matière -- 09/08, demande Bourama. Contrairement à
+    api/roles.py:diffuser_document (qui écrit niveau="agent", donc visible
+    par TOUS les utilisateurs de l'agent), ici le fichier est ajouté
+    séparément dans la BIBLIOTHÈQUE PERSONNELLE de CHAQUE receveur
+    (niveau="utilisateur", voir api/bibliotheque_utilisateur.py) : privé au
+    lien code-par-code, pas de fuite vers les autres receveurs de Nitrux.
+    Vectorisation PDF via indexer_pdf_bibliotheque (table dédiée
+    documents_bibliotheque, scopée user_id) -- pas indexer_document (RAG
+    partagé par agent_id, non scopé par utilisateur), pour la même raison
+    de confidentialité.
+    """
+    if fichier.content_type not in TYPES_DIFFUSION_AUTORISES:
+        raise erreur_api(400, "TYPE_DE_FICHIER_NON_SUPPORTE")
+
+    contenu = await fichier.read()
+    if len(contenu) == 0:
+        raise erreur_api(400, "FICHIER_VIDE")
+    if len(contenu) > TAILLE_MAX_DIFFUSION_OCTETS:
+        raise erreur_api(400, "FICHIER_TROP_LOURD_50_MO_MAX")
+
+    receveurs = _receveurs_de(contenu_id, utilisateur.id, agent_id)
+    if not receveurs:
+        return ResultatDiffusionMatiere(diffuse_a=0, total_receveurs=0, echecs=[])
+
+    nom_original = fichier.filename or "fichier"
+    description_finale = (
+        f"{titre.strip()} — {description.strip()}" if (titre or "").strip() and (description or "").strip()
+        else (description or titre or "").strip() or nom_original
+    )
+
+    diffuse_a = 0
+    echecs: list[str] = []
+    for receveur_id in receveurs:
+        try:
+            ligne = enregistrer_fichier(
+                contenu=contenu,
+                nom_fichier=nom_original,
+                type_mime=fichier.content_type,
+                niveau="utilisateur",
+                uploade_par=utilisateur.id,
+                user_id=receveur_id,
+                description=description_finale,
+            )
+        except Exception as e:
+            logging.error(f"ERREUR diffusion matière (contenu_id={contenu_id}, receveur={receveur_id}) : {e}")
+            echecs.append(receveur_id)
+            continue
+
+        if fichier.content_type == "application/pdf":
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(contenu)
+                chemin_temp = tmp.name
+            try:
+                indexer_pdf_bibliotheque(chemin_temp, fichier_id=ligne["id"], user_id=receveur_id)
+            except Exception as e:
+                # Non bloquant, comme la bibliothèque perso (voir sa
+                # docstring) : le fichier reste stocké et retrouvable même
+                # si la vectorisation échoue.
+                logging.error(f"ERREUR vectorisation PDF diffusion (fichier_id={ligne['id']}, receveur={receveur_id}) : {e}")
+            finally:
+                try:
+                    os.remove(chemin_temp)
+                except OSError:
+                    pass
+
+        diffuse_a += 1
+
+    journaliser(
+        action="contenu_matiere.diffuse",
+        user_id=utilisateur.id,
+        cible_type="agent",
+        cible_id=agent_id,
+        details={"contenu_id": contenu_id, "nom_original": nom_original, "diffuse_a": diffuse_a, "total_receveurs": len(receveurs)},
+        request=request,
+    )
+
+    return ResultatDiffusionMatiere(diffuse_a=diffuse_a, total_receveurs=len(receveurs), echecs=echecs)
+
+
+class DiffuserLienMatierePayload(BaseModel):
+    url: str
+    titre: str | None = None
+    description: str | None = None
+
+
+@router_enseignant.post("/{contenu_id}/diffuser-lien", response_model=ResultatDiffusionMatiere, status_code=201)
+def diffuser_lien_matiere(
+    agent_id: str,
+    contenu_id: str,
+    payload: DiffuserLienMatierePayload,
+    request: Request,
+    utilisateur=Depends(utilisateur_courant),
+):
+    """Pendant de diffuser_document_matiere pour un lien (pas de fichier,
+    juste une URL) -- même portée (mes receveurs pour ce contenu_id
+    précis), même stockage niveau="utilisateur" par receveur."""
+    if not (payload.titre or "").strip() and not (payload.description or "").strip():
+        raise erreur_api(400, "DONNE_AU_MOINS_UNE_DESCRIPTION_OU")
+    if not (payload.url or "").strip():
+        raise erreur_api(400, "URL_MANQUANTE")
+
+    receveurs = _receveurs_de(contenu_id, utilisateur.id, agent_id)
+    if not receveurs:
+        return ResultatDiffusionMatiere(diffuse_a=0, total_receveurs=0, echecs=[])
+
+    description_finale = (
+        f"{payload.titre.strip()} — {payload.description.strip()}"
+        if (payload.titre or "").strip() and (payload.description or "").strip()
+        else (payload.description or payload.titre or "").strip()
+    )
+
+    diffuse_a = 0
+    echecs: list[str] = []
+    for receveur_id in receveurs:
+        try:
+            enregistrer_lien(
+                url=payload.url.strip(),
+                nom_fichier=payload.titre.strip() if payload.titre else payload.url.strip(),
+                niveau="utilisateur",
+                uploade_par=utilisateur.id,
+                user_id=receveur_id,
+                description=description_finale,
+            )
+            diffuse_a += 1
+        except Exception as e:
+            logging.error(f"ERREUR diffusion lien matière (contenu_id={contenu_id}, receveur={receveur_id}) : {e}")
+            echecs.append(receveur_id)
+
+    journaliser(
+        action="contenu_matiere.lien_diffuse",
+        user_id=utilisateur.id,
+        cible_type="agent",
+        cible_id=agent_id,
+        details={"contenu_id": contenu_id, "url": payload.url, "diffuse_a": diffuse_a, "total_receveurs": len(receveurs)},
+        request=request,
+    )
+
+    return ResultatDiffusionMatiere(diffuse_a=diffuse_a, total_receveurs=len(receveurs), echecs=echecs)
