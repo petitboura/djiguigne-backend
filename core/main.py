@@ -2622,19 +2622,32 @@ def chat(message_utilisateur=None, historique=None, user_id=None, reprise=None, 
     if historique is None:
         historique = []
 
-    # Modération d'entrée (Llama Guard, 25/07) : vérifie le message BRUT de
-    # l'étudiant avant tout le reste (prompt système, RAG, appel du modèle
-    # principal...) -- fail-fast, pas la peine de construire quoi que ce
-    # soit si le message est bloqué. Demande Bourama (25/07) : uniquement
-    # l'entrée pour l'instant, pas de vérification sur la sortie de l'agent
-    # (pour limiter le surcoût en tokens -- l'agent garde ses garde-fous via
-    # son prompt système + le filet JSON cassé déjà en place).
+    # Perf (10/08, demande Bourama : "dis-moi tout ce qui se passe") : la
+    # modération d'entrée (juste en dessous) est elle-même un appel LLM
+    # complet -- un modèle DE RAISONNEMENT (gpt-oss-safeguard-20b), pas un
+    # petit modèle instantané comme les routeurs -- et jusqu'ici
+    # BLOQUANTE avant absolument tout le reste (routeur d'outils, RAG,
+    # prompt système...). Elle démarre maintenant en tâche de fond ICI,
+    # en parallèle de tout ce qui suit, et son résultat n'est vérifié
+    # qu'aux deux points où du contenu serait effectivement révélé
+    # (marqués PERF plus bas) -- jamais avant. Aucun changement de
+    # comportement de sécurité : un message toujours détecté comme non
+    # sûr est toujours bloqué avant toute réponse, juste sans avoir
+    # attendu son tour en premier.
+    f_moderation = None
     if message_utilisateur:
-        est_sur, categorie = _verifier_message_utilisateur(message_utilisateur)
-        if not est_sur:
-            logging.warning(f"Message bloqué par la modération d'entrée (Llama Guard, {categorie}).")
-            yield {"type": "reponse", "texte": MESSAGE_CONTENU_BLOQUE}
-            return
+        f_moderation_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        f_moderation = f_moderation_executor.submit(_verifier_message_utilisateur, message_utilisateur)
+
+    # Modération d'entrée (25/07, remplacée Llama Guard -> gpt-oss-safeguard,
+    # voir _verifier_message_utilisateur plus haut) : lancée en tâche de
+    # fond juste au-dessus (perf 10/08), plus décrite ici comme un simple
+    # bloc synchrone -- son résultat est vérifié plus bas, aux deux points
+    # marqués PERF, jamais avant qu'une réponse ne soit sur le point d'être
+    # révélée. Demande Bourama (25/07) : uniquement l'entrée pour
+    # l'instant, pas de vérification sur la sortie de l'agent (pour
+    # limiter le surcoût en tokens -- l'agent garde ses garde-fous via son
+    # prompt système + le filet JSON cassé déjà en place).
 
     if agent_id is None:
         agent_id = get_secret("AGENT_ID") or AGENT_ID_PAR_DEFAUT
@@ -2697,6 +2710,20 @@ def chat(message_utilisateur=None, historique=None, user_id=None, reprise=None, 
         outils_mcp, table_routage, system_final = f_optimiste.result()
         outil_force_verifie = None
 
+        # PERF (10/08) : premier point où quelque chose serait révélé à
+        # l'utilisateur (l'événement outils_suggeres juste en dessous) --
+        # c'est ici, et seulement ici, qu'on attend enfin la modération
+        # lancée en tâche de fond plus haut (déjà terminée ou presque,
+        # vu qu'elle a tourné en parallèle du routeur d'outils + de la
+        # construction du prompt pendant tout ce temps).
+        if f_moderation is not None:
+            est_sur, categorie = f_moderation.result()
+            f_moderation_executor.shutdown(wait=False)
+            if not est_sur:
+                logging.warning(f"Message bloqué par la modération d'entrée (gpt-oss-safeguard, {categorie}).")
+                yield {"type": "reponse", "texte": MESSAGE_CONTENU_BLOQUE}
+                return
+
         if outils_suggeres:
             # routeur_outils_auto (03/08, demande Bourama, agent par agent) :
             # colonne sur `agents`, false par defaut. Si true pour CET agent,
@@ -2750,6 +2777,21 @@ def chat(message_utilisateur=None, historique=None, user_id=None, reprise=None, 
             outils_mcp, table_routage = lister_tous_les_outils(get_secret, user_id, agent_id, outil_force)
             outil_force_verifie = [o["function"]["name"] for o in outils_mcp] if outil_force else outil_force
         system_final = _construire_system_prompt(message_utilisateur, agent_id, user_id, longueur_reponse, fuseau_horaire, recherche_forcee, outil_force_verifie, sans_enseignant)
+
+        # PERF (10/08) : second (et dernier) point de vérification --
+        # couvre tous les chemins qui ne passent PAS par le premier
+        # (outil déjà forcé côté frontend, bouton "Aucun" cliqué, ou
+        # message avec image/vidéo jointe). f_moderation.result() est
+        # sans coût s'il a déjà terminé (cas normal, il tourne depuis le
+        # tout début de la fonction) -- appeler .result() deux fois sur
+        # le même Future ne relance rien, renvoie juste la même valeur.
+        if f_moderation is not None:
+            est_sur, categorie = f_moderation.result()
+            f_moderation_executor.shutdown(wait=False)
+            if not est_sur:
+                logging.warning(f"Message bloqué par la modération d'entrée (gpt-oss-safeguard, {categorie}).")
+                yield {"type": "reponse", "texte": MESSAGE_CONTENU_BLOQUE}
+                return
 
     if localisation and localisation.get("latitude") is not None and localisation.get("longitude") is not None:
         # Contexte "système/environnement" (2026-07-20) : position GPS
