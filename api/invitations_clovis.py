@@ -1,5 +1,5 @@
 """
-Invitations Class GPT (2026-08-08, partie 4 du brief Class GPT).
+Invitations Clovis (2026-08-08, partie 4 du brief Clovis).
 
 Remplace le menu déroulant de POST /api/roles/choisir (api/roles.py) par
 un code à partager -- même esprit que api/contenu_dynamique_matiere.py
@@ -38,7 +38,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", "core"))
 
 logging.basicConfig(level=logging.INFO)
 
-router = APIRouter(prefix="/api/roles", tags=["invitations_classgpt"])
+router = APIRouter(prefix="/api/roles", tags=["invitations_clovis"])
 
 # Même alphabet que contenu_dynamique_matiere.py (pas de 0/O/1/I/L) --
 # un code pensé pour être recopié à la main sans ambiguïté.
@@ -57,7 +57,7 @@ def _generer_code_unique() -> str:
         code = "".join(secrets.choice(_ALPHABET_CODE) for _ in range(_LONGUEUR_CODE))
         try:
             existe = (
-                supabase.table("invitations_classgpt").select("id").eq("code", code).maybe_single().execute()
+                supabase.table("invitations_clovis").select("id").eq("code", code).maybe_single().execute()
             )
         except Exception as e:
             logging.error(f"ERREUR SUPABASE (vérification unicité code invitation) : {e}")
@@ -85,7 +85,7 @@ def lire_mon_invitation(utilisateur=Depends(utilisateur_courant)):
 
     try:
         res = (
-            supabase.table("invitations_classgpt")
+            supabase.table("invitations_clovis")
             .select("code, role_cible, utilisations")
             .eq("proprietaire_id", utilisateur.id)
             .eq("actif", True)
@@ -118,10 +118,10 @@ def generer_invitation(request: Request, utilisateur=Depends(utilisateur_courant
     code = _generer_code_unique()
 
     try:
-        supabase.table("invitations_classgpt").update({"actif": False}).eq(
+        supabase.table("invitations_clovis").update({"actif": False}).eq(
             "proprietaire_id", utilisateur.id
         ).eq("actif", True).execute()
-        supabase.table("invitations_classgpt").insert(
+        supabase.table("invitations_clovis").insert(
             {
                 "proprietaire_id": utilisateur.id,
                 "role_proprietaire": profil["role"],
@@ -136,7 +136,7 @@ def generer_invitation(request: Request, utilisateur=Depends(utilisateur_courant
     journaliser(
         action="invitation.generee",
         user_id=utilisateur.id,
-        cible_type="invitation_classgpt",
+        cible_type="invitation_clovis",
         cible_id=None,
         details={"role_cible": role_cible},
         request=request,
@@ -160,7 +160,7 @@ def rejoindre_par_code(
 ):
     """
     Rattache le compte connecté au propriétaire d'un code -- remplace
-    POST /api/roles/choisir pour Class GPT (plus de menu déroulant), même
+    POST /api/roles/choisir pour Clovis (plus de menu déroulant), même
     règle "une seule fois" : un compte qui a déjà un rôle ne peut pas en
     reprendre un autre par ce chemin non plus.
     """
@@ -176,7 +176,7 @@ def rejoindre_par_code(
 
     try:
         invitation = (
-            supabase.table("invitations_classgpt")
+            supabase.table("invitations_clovis")
             .select("id, proprietaire_id, role_cible, utilisations")
             .eq("code", code_normalise)
             .eq("actif", True)
@@ -220,7 +220,7 @@ def rejoindre_par_code(
             ligne_maj["slug"] = generer_id_depuis_nom(utilisateur.id[:8]) or utilisateur.id[:8]
             supabase.table("profiles").insert(ligne_maj).execute()
 
-        supabase.table("invitations_classgpt").update({"utilisations": donnees_invitation["utilisations"] + 1}).eq(
+        supabase.table("invitations_clovis").update({"utilisations": donnees_invitation["utilisations"] + 1}).eq(
             "id", donnees_invitation["id"]
         ).execute()
     except Exception as e:
@@ -230,7 +230,7 @@ def rejoindre_par_code(
     journaliser(
         action="invitation.utilisee",
         user_id=utilisateur.id,
-        cible_type="invitation_classgpt",
+        cible_type="invitation_clovis",
         cible_id=donnees_invitation["id"],
         details={"role_cible": role_cible, "proprietaire_id": proprietaire_id},
         request=request,
@@ -245,7 +245,7 @@ class RootPayload(BaseModel):
 @router.post("/etablissement-racine", response_model=RejoindreReponse, status_code=201)
 def creer_etudiant_autonome(payload: RootPayload, request: Request, utilisateur=Depends(utilisateur_courant)):
     """
-    Inscription libre sur Class GPT (sans code d'invitation) : devient
+    Inscription libre sur Clovis (sans code d'invitation) : devient
     "etudiant" directement, sans rattachement à un enseignant
     (enseignant_id reste NULL) -- décision Bourama du 09/08, remplace le
     comportement d'origine (rôle "etablissement" par défaut). Le nom de

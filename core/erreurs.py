@@ -174,7 +174,7 @@ MESSAGES_FR: dict[str, str] = {
     "ENSEIGNANT_ID_REQUIS_POUR_ETUDIANT": "Choisis ton enseignant pour continuer.",
     "ETABLISSEMENT_ID_REQUIS_POUR_ENSEIGNANT": "Choisis ton établissement pour continuer.",
     "ACTION_RESERVEE_A_CE_ROLE": "Cette action n'est pas disponible pour ton rôle.",
-    # Invitations Class GPT (2026-08-08, partie 4)
+    # Invitations Clovis (2026-08-08, partie 4)
     "AUCUNE_INVITATION_ACTIVE": "Aucun code actif pour l'instant, génère-en un.",
     "CODE_MANQUANT": "Entre un code pour continuer.",
     "NOM_AFFICHE_MANQUANT": "Entre ton nom pour continuer.",
