@@ -35,7 +35,7 @@ from api.droits_agent import router as droits_agent_router
 from api.droits_agent import router_registre as registre_outils_router
 from api.bibliotheque_utilisateur import router as bibliotheque_utilisateur_router
 from api.roles import router as roles_router
-# from api.invitations_classgpt import router as invitations_classgpt_router  # DÉSACTIVÉ 09/08, voir include_router ci-dessous
+# from api.invitations_clovis import router as invitations_clovis_router  # DÉSACTIVÉ 09/08, voir include_router ci-dessous (fichier renommé 11/08 : invitations_classgpt.py -> invitations_clovis.py, reste inutilisé)
 from api.contenu_dynamique_matiere import router_enseignant as contenu_matiere_enseignant_router
 from api.contenu_dynamique_matiere import router_etudiant as contenu_matiere_etudiant_router
 from api.contenu_dynamique_matiere import router_liste_agents as contenu_matiere_liste_agents_router
@@ -151,19 +151,27 @@ ORIGINES_AUTORISEES = [
 # retoucher ce fichier a chaque nouveau lien.
 MOTIF_ORIGINES_VERCEL = r"https://djiguign[a-z0-9\-]*\.vercel\.app"
 
-# Idem pour Class GPT (2026-08-09) -- projet Vercel séparé
-# (classgpt-frontend), URL de prévisualisation différente à chaque
-# déploiement (ex. classgpt-frontend-bld5bmptn-petitbouras-projects.
+# Idem pour Clovis (2026-08-09) -- projet Vercel séparé
+# (classgpt-frontend/clovis-frontend), URL de prévisualisation différente
+# à chaque déploiement (ex. clovis-frontend-bld5bmptn-petitbouras-projects.
 # vercel.app). Correctif : l'absence de ce motif faisait échouer TOUTE
 # requête depuis ce frontend avec "Failed to fetch" côté navigateur
 # (bloqué par CORS avant même que la requête parte), pas une erreur
 # d'API -- rien à voir avec une variable d'environnement manquante.
-MOTIF_ORIGINES_CLASSGPT = r"https://classgpt-frontend[a-z0-9\-]*\.vercel\.app"
+#
+# 11/08 : accepte encore "classgpt-frontend" en plus de "clovis-frontend"
+# le temps que le projet Vercel lui-même soit renommé (le code a été
+# renommé côté repo, mais le projet Vercel s'appelle toujours
+# classgpt-frontend tant que ça n'est pas fait à la main dans ses
+# Settings -- tant que ce n'est pas fait, les URLs réelles de
+# déploiement commencent encore par "classgpt-frontend"). A retirer
+# une fois le projet Vercel renommé.
+MOTIF_ORIGINES_CLOVIS = r"https://(classgpt|clovis)-frontend[a-z0-9\-]*\.vercel\.app"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ORIGINES_AUTORISEES,
-    allow_origin_regex=f"({MOTIF_ORIGINES_VERCEL}|{MOTIF_ORIGINES_CLASSGPT})",
+    allow_origin_regex=f"({MOTIF_ORIGINES_VERCEL}|{MOTIF_ORIGINES_CLOVIS})",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -214,12 +222,12 @@ app.include_router(droits_agent_router)
 app.include_router(registre_outils_router)
 app.include_router(bibliotheque_utilisateur_router)
 app.include_router(roles_router)
-# invitations_classgpt_router retiré le 09/08 (demande Bourama : plus de
-# rôle enseignant/étudiant/établissement pour Class GPT) -- remplacé par
+# invitations_clovis_router retiré le 09/08 (demande Bourama : plus de
+# rôle enseignant/étudiant/établissement pour Clovis) -- remplacé par
 # contenu_matiere_enseignant_router/contenu_matiere_etudiant_router
 # ci-dessous, qui font exactement le même métier (générer un code /
 # entrer un code) sans aucune notion de rôle. Fichier conservé sur
-# disque (api/invitations_classgpt.py) mais plus jamais monté.
+# disque (api/invitations_clovis.py, renommé 11/08) mais plus jamais monté.
 app.include_router(contenu_matiere_enseignant_router)
 app.include_router(contenu_matiere_etudiant_router)
 app.include_router(contenu_matiere_liste_agents_router)
