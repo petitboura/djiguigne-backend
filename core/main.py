@@ -1362,9 +1362,27 @@ def _construire_system_prompt(message_utilisateur, agent_id, user_id=None, longu
     else:
         system_prompt = _charger_prompt_personnalise(agent_id, user_id) or get_system_prompt(agent_id)
 
-    candidats = chercher_candidats(message_utilisateur, agent_id=agent_id)
-    resume_memoire = _charger_resume_memoire(user_id)
-    profil_utilisateur = _charger_profil_utilisateur(agent_id, user_id)
+    # Perf (10/08, demande Bourama : "qu'est-ce qui se charge à chaque
+    # question, rends-le le plus rapide possible") : ces 4 lectures sont
+    # indépendantes les unes des autres (aucune ne dépend du résultat
+    # d'une autre) mais partaient jusqu'ici en SÉQUENCE -- chacune payait
+    # son propre aller-retour réseau vers Supabase/Gemini l'une après
+    # l'autre, avant même le premier appel au LLM. Même pattern que
+    # get_prompts/get_documents dans core/retriever.py:chercher_candidats
+    # (déjà parallélisées en interne) : ici on parallélise un niveau
+    # au-dessus, chercher_candidats inclus. Résultats identiques à avant,
+    # juste calculés en même temps plutôt que les uns après les autres.
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        f_candidats = executor.submit(chercher_candidats, message_utilisateur, agent_id=agent_id)
+        f_resume = executor.submit(_charger_resume_memoire, user_id)
+        f_profil = executor.submit(_charger_profil_utilisateur, agent_id, user_id)
+        f_comportements = (
+            executor.submit(lister_comportements_etudiant, agent_id, user_id) if user_id else None
+        )
+    candidats = f_candidats.result()
+    resume_memoire = f_resume.result()
+    profil_utilisateur = f_profil.result()
+    comportements_etudiant = f_comportements.result() if f_comportements else []
 
     instructions = "".join(f"\n{c['contenu']}\n" for c in candidats.get("prompts", []))
     contexte_docs = "".join(f"\n{c['contenu']}\n" for c in candidats.get("documents", []))
@@ -1415,7 +1433,9 @@ def _construire_system_prompt(message_utilisateur, agent_id, user_id=None, longu
     # (généraliste, matière d'un enseignant, ou "sans enseignant") --
     # jamais un remplacement. Liste vide si rien d'enregistré pour cet
     # (agent, utilisateur), aucun bruit ajouté dans ce cas.
-    comportements_etudiant = lister_comportements_etudiant(agent_id, user_id) if user_id else []
+    # comportements_etudiant déjà chargé plus haut, en parallèle avec
+    # candidats/resume_memoire/profil_utilisateur (voir ThreadPoolExecutor
+    # ci-dessus, perf 10/08).
     if comportements_etudiant:
         liste_comportements = "\n".join(f"- {c['texte']}" for c in comportements_etudiant)
         system_final += (
