@@ -152,13 +152,21 @@ ORIGINES_AUTORISEES = [
 MOTIF_ORIGINES_VERCEL = r"https://djiguign[a-z0-9\-]*\.vercel\.app"
 
 # Idem pour Clovis (2026-08-09) -- projet Vercel séparé
-# (clovis-frontend), URL de prévisualisation différente à chaque
-# déploiement (ex. clovis-frontend-bld5bmptn-petitbouras-projects.
+# (classgpt-frontend/clovis-frontend), URL de prévisualisation différente
+# à chaque déploiement (ex. clovis-frontend-bld5bmptn-petitbouras-projects.
 # vercel.app). Correctif : l'absence de ce motif faisait échouer TOUTE
 # requête depuis ce frontend avec "Failed to fetch" côté navigateur
 # (bloqué par CORS avant même que la requête parte), pas une erreur
 # d'API -- rien à voir avec une variable d'environnement manquante.
-MOTIF_ORIGINES_CLOVIS = r"https://clovis-frontend[a-z0-9\-]*\.vercel\.app"
+#
+# 11/08 : accepte encore "classgpt-frontend" en plus de "clovis-frontend"
+# le temps que le projet Vercel lui-même soit renommé (le code a été
+# renommé côté repo, mais le projet Vercel s'appelle toujours
+# classgpt-frontend tant que ça n'est pas fait à la main dans ses
+# Settings -- tant que ce n'est pas fait, les URLs réelles de
+# déploiement commencent encore par "classgpt-frontend"). A retirer
+# une fois le projet Vercel renommé.
+MOTIF_ORIGINES_CLOVIS = r"https://(classgpt|clovis)-frontend[a-z0-9\-]*\.vercel\.app"
 
 app.add_middleware(
     CORSMiddleware,
