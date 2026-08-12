@@ -42,6 +42,7 @@ from api.contenu_dynamique_matiere import router_etudiant as contenu_matiere_etu
 from api.contenu_dynamique_matiere import router_liste_agents as contenu_matiere_liste_agents_router
 from api.comportements_etudiants import router as comportements_etudiants_router
 from api.programmes import router_programmes, router_matieres, router_chapitres
+from api.plugins_programme import router as plugins_router, router_programmes as plugins_programmes_router
 from core.serveur_mcp_generation import mcp_generation
 from core.notifications_push import traiter_rappels_echus, notifications_push_disponible
 from core.proactivite import verifier_relances_proactives
@@ -244,6 +245,11 @@ app.include_router(router_chapitres)
 # -- voir api/contenu_programme.py. Dépend des tables créées par le lot 1
 # ci-dessus.
 app.include_router(contenu_programme_router)
+# Système de plugins (export/import de programme), 2026-08-12, chantier
+# "programme adaptatif étudiant" lot 3/5 -- voir api/plugins_programme.py.
+# Dépend des tables créées par le lot 1 ci-dessus.
+app.include_router(plugins_router)
+app.include_router(plugins_programmes_router)
 
 
 @app.get("/health")
