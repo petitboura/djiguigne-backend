@@ -185,6 +185,12 @@ MESSAGES_FR: dict[str, str] = {
     "ANNONCE_VIDE": "L'annonce ne peut pas être vide.",
     "TEXTE_REQUIS": "Le texte ne peut pas être vide.",
     "COMPORTEMENT_INTROUVABLE": "Comportement introuvable.",
+    "PROGRAMME_INTROUVABLE": "Programme introuvable.",
+    "MATIERE_INTROUVABLE": "Matière introuvable.",
+    "CHAPITRE_INTROUVABLE": "Chapitre introuvable.",
+    "NIVEAU_REQUIS": "Le niveau est requis.",
+    "NOM_REQUIS": "Le nom est requis.",
+    "AUCUNE_MODIFICATION_FOURNIE": "Aucune modification fournie.",
 }
 
 
