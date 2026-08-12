@@ -60,6 +60,16 @@ def _url_github(get_secret, user_id, agent_id):
     return f"http://localhost:{port}/mcp/github"
 
 
+def _url_programme(get_secret, user_id, agent_id):
+    # Même logique que _url_generation -- serveur MCP interne (voir
+    # core/serveur_mcp_programme.py). user_id transmis en query param,
+    # nécessaire (identité de l'étudiant, récupérée côté serveur via
+    # ctx.request_context.request.query_params -- jamais un paramètre
+    # user_id laissé au modèle, voir docstring du module).
+    port = os.environ.get("PORT", "8000")
+    return f"http://localhost:{port}/mcp/programme?user_id={user_id}"
+
+
 def _url_tavily(get_secret, user_id, agent_id):
     return f"https://mcp.tavily.com/mcp/?tavilyApiKey={get_secret('TAVILY_API_KEY')}"
 
@@ -134,6 +144,20 @@ SERVEURS_MCP = [
         # quel que soit le mode (direct ou branche+PR).
     },
     {
+        "nom": "programme",
+        "url_builder": _url_programme,
+        "necessite_utilisateur": True,
+        # Structure programme (classe/matière/chapitre), 2026-08-12 --
+        # voir core/serveur_mcp_programme.py. Inutile sans étudiant
+        # connecté (rien à consulter/écrire), donc necessite_utilisateur
+        # comme Notion, plutôt que de proposer des outils qui échouent
+        # systématiquement à un utilisateur anonyme.
+        # ajouter_matiere/ajouter_chapitre/ajouter_exercice/ajouter_document
+        # ÉCRIVENT réellement dans le programme de l'étudiant -> dans
+        # OUTILS_SENSIBLES plus bas, confirmation avant exécution.
+        # consulter_programme reste en lecture seule, hors de cette liste.
+    },
+    {
         "nom": "notion",
         "url_builder": _url_notion,
         "headers_builder": _headers_notion,
@@ -179,6 +203,13 @@ OUTILS_SENSIBLES = {
     # (commit sur la branche de base) ou "branche_pr" (nouvelle branche +
     # Pull Request). Aucun des deux modes n'est silencieux.
     "modifier_fichier_depot_github",
+    # ÉCRIVENT réellement dans le programme de l'étudiant (voir
+    # core/serveur_mcp_programme.py) -- consulter_programme (lecture
+    # seule) volontairement absent de cette liste.
+    "ajouter_matiere",
+    "ajouter_chapitre",
+    "ajouter_exercice",
+    "ajouter_document",
 }
 
 # Outils dont le RÉSULTAT n'a pas besoin de retourner au modèle (2026-07-29,

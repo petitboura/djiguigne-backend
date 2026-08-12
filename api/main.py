@@ -46,7 +46,9 @@ from api.plugins_programme import router as plugins_router, router_programmes as
 from core.serveur_mcp_generation import mcp_generation
 from core.notifications_push import traiter_rappels_echus, notifications_push_disponible
 from core.proactivite import verifier_relances_proactives
+from core.audit_programme import executer_audits_du_lundi
 from core.serveur_mcp_github import mcp_github
+from core.serveur_mcp_programme import mcp_programme
 from core.erreurs import erreur_api
 
 logging.basicConfig(level=logging.INFO)
@@ -86,6 +88,24 @@ async def _boucle_planificateur_proactivite():
         await asyncio.sleep(6 * 60 * 60)
 
 
+async def _boucle_planificateur_audit_programme():
+    # Audit IA hebdomadaire par matière (12/08, chantier "connexion IA
+    # <-> structure programme"). executer_audits_du_lundi() (voir
+    # core/audit_programme.py) est lui-même best-effort et vérifie déjà,
+    # matière par matière, si un audit a été fait dans les 6 derniers
+    # jours -- appeler cette fonction plus souvent qu'une fois par lundi
+    # ne fait donc aucun mal (idempotent), ça évite juste d'avoir à
+    # calculer précisément "le prochain lundi à minuit" et d'être fragile
+    # à un redémarrage du process qui ferait rater ce créneau exact.
+    # Intervalle choisi : toutes les 6h, comme la proactivité.
+    while True:
+        try:
+            executer_audits_du_lundi()
+        except Exception as e:
+            logging.error(f"ERREUR boucle planificateur audit programme : {e}")
+        await asyncio.sleep(6 * 60 * 60)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     # Toutes les routes API sont en `def` sync (Supabase, Groq, Gemini :
@@ -104,9 +124,10 @@ async def _lifespan(app: FastAPI):
     # besoin de tourner pendant toute la durée de vie du process, sinon
     # streamable_http_app() renvoie une erreur "Task group is not
     # initialized" au premier appel d'outil.
-    async with mcp_generation.session_manager.run(), mcp_github.session_manager.run():
+    async with mcp_generation.session_manager.run(), mcp_github.session_manager.run(), mcp_programme.session_manager.run():
         tache_planificateur = None
         tache_proactivite = None
+        tache_audit_programme = asyncio.create_task(_boucle_planificateur_audit_programme())
         if notifications_push_disponible():
             tache_planificateur = asyncio.create_task(_boucle_planificateur_rappels())
             tache_proactivite = asyncio.create_task(_boucle_planificateur_proactivite())
@@ -115,6 +136,7 @@ async def _lifespan(app: FastAPI):
             tache_planificateur.cancel()
         if tache_proactivite:
             tache_proactivite.cancel()
+        tache_audit_programme.cancel()
 
 
 app = FastAPI(title="Djiguigne API", version="0.1.0", lifespan=_lifespan)
@@ -133,6 +155,8 @@ app.mount("/mcp/generation", mcp_generation.streamable_http_app(stateless_http=T
 # core/serveur_mcp_github.py, monté de la même façon que "generation"
 # ci-dessus. registre_outils.py l'enregistre sous le nom "github".
 app.mount("/mcp/github", mcp_github.streamable_http_app(stateless_http=True, streamable_http_path="/"))
+# core/serveur_mcp_programme.py, monté de la même façon.
+app.mount("/mcp/programme", mcp_programme.streamable_http_app(stateless_http=True, streamable_http_path="/"))
 
 # Domaines autorisés à appeler cette API. "http://localhost:3000" est le
 # port par defaut de `npm run dev` en Next.js, a garder tant que le

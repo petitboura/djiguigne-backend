@@ -15,6 +15,7 @@ from configuration import get_system_prompt
 from contenu_dynamique_matiere import agent_a_contenu_dynamique, resoudre_system_prompt as resoudre_system_prompt_matiere
 from comportements_etudiants import lister_comportements as lister_comportements_etudiant
 from retriever import chercher_candidats
+from audit_programme import chercher_audits_programme, lister_mes_programmes_legers
 from mcp_tools import lister_tous_les_outils, lister_outils_autorises_pour_agent, appeler_outil
 from registre_outils import OUTILS_SENSIBLES, OUTILS_AUTONOMES
 from fournisseurs_llm import generer_reponse_premium
@@ -1382,11 +1383,27 @@ def _construire_system_prompt(message_utilisateur, agent_id, user_id=None, longu
         f_comportements = (
             executor.submit(lister_comportements_etudiant, agent_id, user_id) if user_id else None
         )
+        # Audit programme (12/08, chantier "connexion IA <-> structure
+        # programme") : même tier de parallélisation que les 4 lectures
+        # ci-dessus -- aucune des deux ne dépend de system_prompt/candidats.
+        # chercher_audits_programme et lister_mes_programmes_legers
+        # renvoient [] elles-mêmes si user_id est vide (pas de session
+        # connectée) -- soumis inconditionnellement n'est pas nécessaire,
+        # même garde que f_comportements pour éviter un aller-retour
+        # Supabase inutile.
+        f_audits_programme = (
+            executor.submit(chercher_audits_programme, message_utilisateur, user_id) if user_id else None
+        )
+        f_mes_programmes = (
+            executor.submit(lister_mes_programmes_legers, user_id) if user_id else None
+        )
     system_prompt = f_system_prompt.result()
     candidats = f_candidats.result()
     resume_memoire = f_resume.result()
     profil_utilisateur = f_profil.result()
     comportements_etudiant = f_comportements.result() if f_comportements else []
+    audits_programme = f_audits_programme.result() if f_audits_programme else []
+    mes_programmes = f_mes_programmes.result() if f_mes_programmes else []
 
     instructions = "".join(f"\n{c['contenu']}\n" for c in candidats.get("prompts", []))
     contexte_docs = "".join(f"\n{c['contenu']}\n" for c in candidats.get("documents", []))
@@ -1463,6 +1480,24 @@ def _construire_system_prompt(message_utilisateur, agent_id, user_id=None, longu
             "\n\nPROFIL CONNU DE CET UTILISATEUR (rempli automatiquement au fil des "
             "conversations, à utiliser pour personnaliser ta réponse, ne jamais le "
             f"réciter tel quel) :\n{json.dumps(profil_utilisateur, ensure_ascii=False)}"
+        )
+
+    # Programmes de l'étudiant (12/08, chantier "connexion IA <-> structure
+    # programme") : liste LÉGÈRE uniquement (niveau/nom) -- juste assez pour
+    # que l'IA sache que cette section existe et propose d'y accéder. La
+    # structure complète (matières/chapitres/limites) n'est PAS envoyée ici
+    # -- elle doit être demandée via l'outil consulter_programme (voir
+    # core/serveur_mcp_programme.py), pour ne pas alourdir chaque message.
+    if mes_programmes:
+        liste_programmes = "\n".join(
+            f"- id={p['id']} — {p['niveau']}" + (f" ({p['nom']})" if p.get("nom") else "")
+            for p in mes_programmes
+        )
+        system_final += (
+            "\n\nPROGRAMMES DE CET ÉTUDIANT (structure classe/matière/chapitre qu'il a "
+            "créée dans la section Programme -- utilise l'outil consulter_programme avec "
+            "l'id ci-dessous si tu as besoin de voir sa structure complète pour aider "
+            f"l'étudiant ou écrire dedans) :\n{liste_programmes}"
         )
 
     # Bouton Outils (2026-07-25, multi-sélection depuis le 26/07 --
@@ -1551,6 +1586,19 @@ def _construire_system_prompt(message_utilisateur, agent_id, user_id=None, longu
         system_final += f"\n\n{instructions}"
     if contexte_docs:
         system_final += f"\n\n{contexte_docs}"
+    # Audits de programme (12/08) : RAG scopé par étudiant (pas par agent,
+    # contrairement à candidats/contexte_docs ci-dessus) -- extraits des
+    # audits hebdomadaires les plus pertinents pour CE message précis (voir
+    # core/audit_programme.py). Même tier de volatilité que le RAG
+    # documents : dépend du texte exact de la question, doit rester après
+    # les blocs stables pour ne pas casser le préfixe cachable Groq.
+    if audits_programme:
+        contexte_audits = "".join(f"\n{a['contenu']}\n" for a in audits_programme)
+        system_final += (
+            "\n\nÉTAT DU PROGRAMME DE CET ÉTUDIANT (extrait de l'audit hebdomadaire le plus "
+            "pertinent pour cette question -- limites et attentes de sa matière, écrites par "
+            f"analyse du contenu réel du programme) :\n{contexte_audits}"
+        )
     if recherche_forcee:
         # Icône de recherche dans la barre de saisie (djiguigne-frontend) --
         # forçage manuel pour CE message précis (voir docstring de
