@@ -36,6 +36,7 @@ from api.droits_agent import router_registre as registre_outils_router
 from api.bibliotheque_utilisateur import router as bibliotheque_utilisateur_router
 from api.roles import router as roles_router
 # from api.invitations_clovis import router as invitations_clovis_router  # DÉSACTIVÉ 09/08, voir include_router ci-dessous (fichier renommé 11/08 : invitations_classgpt.py -> invitations_clovis.py, reste inutilisé)
+from api.contenu_programme import router as contenu_programme_router
 from api.contenu_dynamique_matiere import router_enseignant as contenu_matiere_enseignant_router
 from api.contenu_dynamique_matiere import router_etudiant as contenu_matiere_etudiant_router
 from api.contenu_dynamique_matiere import router_liste_agents as contenu_matiere_liste_agents_router
@@ -238,6 +239,11 @@ app.include_router(comportements_etudiants_router)
 app.include_router(router_programmes)
 app.include_router(router_matieres)
 app.include_router(router_chapitres)
+# Contenu pratique du programme (documents/exercices/examens) + classement
+# transversal, 2026-08-12, chantier "programme adaptatif étudiant" lot 2/5
+# -- voir api/contenu_programme.py. Dépend des tables créées par le lot 1
+# ci-dessus.
+app.include_router(contenu_programme_router)
 
 
 @app.get("/health")
