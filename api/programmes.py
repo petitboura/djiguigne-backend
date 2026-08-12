@@ -18,6 +18,42 @@ from pydantic import BaseModel
 from api.auth import utilisateur_courant, supabase
 from core.erreurs import erreur_api
 
+
+def _nettoyer_classements_pour_cible(cible_type: str, cible_id: str) -> None:
+    """Best-effort : supprime les lignes de classement transversal qui
+    pointaient vers une cible qui vient d'être supprimée. Même pattern que
+    le lot 2 (api/contenu_programme.py) -- classement_transversal_items
+    référence cible_id de façon polymorphe, sans vraie foreign key SQL,
+    donc rien n'est nettoyé automatiquement par le ON DELETE CASCADE des
+    tables programmes/matieres/chapitres. Ne doit jamais faire échouer la
+    suppression principale (déjà faite à ce stade)."""
+    try:
+        supabase.table("classement_transversal_items").delete().eq("cible_type", cible_type).eq(
+            "cible_id", cible_id
+        ).execute()
+    except Exception as e:
+        logging.error(f"ERREUR nettoyage classements orphelins ({cible_type}={cible_id}) : {e}")
+
+
+def _ids_documents_et_exercices_des_chapitres(chapitre_ids: list[str]) -> tuple[list[str], list[str]]:
+    """Pour une liste de chapitre_id sur le point d'être supprimés (cascade
+    SQL), récupère les documents/exercices qui vont être cascade-supprimés
+    avec eux -- il faut leurs ids AVANT la suppression pour pouvoir nettoyer
+    leurs propres entrées de classement transversal après coup."""
+    if not chapitre_ids:
+        return [], []
+    try:
+        docs = (
+            supabase.table("documents_programme").select("id").in_("chapitre_id", chapitre_ids).execute()
+        )
+        exercices = (
+            supabase.table("exercices_programme").select("id").in_("chapitre_id", chapitre_ids).execute()
+        )
+    except Exception as e:
+        logging.error(f"ERREUR lecture documents/exercices pour nettoyage classements : {e}")
+        return [], []
+    return [d["id"] for d in (docs.data or [])], [ex["id"] for ex in (exercices.data or [])]
+
 logging.basicConfig(level=logging.INFO)
 
 router_programmes = APIRouter(prefix="/api/programmes", tags=["programmes"])
@@ -144,10 +180,33 @@ def modifier_programme(programme_id: str, payload: ProgrammePatchPayload, utilis
 def supprimer_programme(programme_id: str, utilisateur=Depends(utilisateur_courant)):
     _charger_programme_ou_404(programme_id, utilisateur.id)
     try:
+        matieres_res = supabase.table("matieres").select("id").eq("programme_id", programme_id).execute()
+    except Exception as e:
+        logging.error(f"ERREUR SUPABASE (lecture matières avant suppression programme {programme_id}) : {e}")
+        raise erreur_api(500, "ERREUR_INCONNUE")
+    matiere_ids = [m["id"] for m in (matieres_res.data or [])]
+    chapitre_ids: list[str] = []
+    if matiere_ids:
+        try:
+            chapitres_res = supabase.table("chapitres").select("id").in_("matiere_id", matiere_ids).execute()
+            chapitre_ids = [c["id"] for c in (chapitres_res.data or [])]
+        except Exception as e:
+            logging.error(f"ERREUR SUPABASE (lecture chapitres avant suppression programme {programme_id}) : {e}")
+            raise erreur_api(500, "ERREUR_INCONNUE")
+    doc_ids, exercice_ids = _ids_documents_et_exercices_des_chapitres(chapitre_ids)
+    try:
         supabase.table("programmes").delete().eq("id", programme_id).execute()
     except Exception as e:
         logging.error(f"ERREUR SUPABASE (suppression programme {programme_id}) : {e}")
         raise erreur_api(500, "ERREUR_INCONNUE")
+    for matiere_id in matiere_ids:
+        _nettoyer_classements_pour_cible("matiere", matiere_id)
+    for chapitre_id in chapitre_ids:
+        _nettoyer_classements_pour_cible("chapitre", chapitre_id)
+    for doc_id in doc_ids:
+        _nettoyer_classements_pour_cible("document", doc_id)
+    for exercice_id in exercice_ids:
+        _nettoyer_classements_pour_cible("exercice", exercice_id)
 
 
 # =============================== Matières ================================
@@ -253,10 +312,24 @@ def modifier_matiere(matiere_id: str, payload: MatierePatchPayload, utilisateur=
 def supprimer_matiere(matiere_id: str, utilisateur=Depends(utilisateur_courant)):
     _charger_matiere_avec_programme_ou_404(matiere_id, utilisateur.id)
     try:
+        chapitres_res = supabase.table("chapitres").select("id").eq("matiere_id", matiere_id).execute()
+    except Exception as e:
+        logging.error(f"ERREUR SUPABASE (lecture chapitres avant suppression matière {matiere_id}) : {e}")
+        raise erreur_api(500, "ERREUR_INCONNUE")
+    chapitre_ids = [c["id"] for c in (chapitres_res.data or [])]
+    doc_ids, exercice_ids = _ids_documents_et_exercices_des_chapitres(chapitre_ids)
+    try:
         supabase.table("matieres").delete().eq("id", matiere_id).execute()
     except Exception as e:
         logging.error(f"ERREUR SUPABASE (suppression matière {matiere_id}) : {e}")
         raise erreur_api(500, "ERREUR_INCONNUE")
+    _nettoyer_classements_pour_cible("matiere", matiere_id)
+    for chapitre_id in chapitre_ids:
+        _nettoyer_classements_pour_cible("chapitre", chapitre_id)
+    for doc_id in doc_ids:
+        _nettoyer_classements_pour_cible("document", doc_id)
+    for exercice_id in exercice_ids:
+        _nettoyer_classements_pour_cible("exercice", exercice_id)
 
 
 # =============================== Chapitres ================================
@@ -375,8 +448,14 @@ def modifier_chapitre(chapitre_id: str, payload: ChapitrePatchPayload, utilisate
 @router_chapitres.delete("/{chapitre_id}", status_code=204)
 def supprimer_chapitre(chapitre_id: str, utilisateur=Depends(utilisateur_courant)):
     _charger_chapitre_avec_programme_ou_404(chapitre_id, utilisateur.id)
+    doc_ids, exercice_ids = _ids_documents_et_exercices_des_chapitres([chapitre_id])
     try:
         supabase.table("chapitres").delete().eq("id", chapitre_id).execute()
     except Exception as e:
         logging.error(f"ERREUR SUPABASE (suppression chapitre {chapitre_id}) : {e}")
         raise erreur_api(500, "ERREUR_INCONNUE")
+    _nettoyer_classements_pour_cible("chapitre", chapitre_id)
+    for doc_id in doc_ids:
+        _nettoyer_classements_pour_cible("document", doc_id)
+    for exercice_id in exercice_ids:
+        _nettoyer_classements_pour_cible("exercice", exercice_id)
