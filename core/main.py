@@ -2926,7 +2926,8 @@ def chat(message_utilisateur=None, historique=None, user_id=None, reprise=None, 
         # 1. GPT-OSS 120B, avec cycle d'outils MCP dynamique
         try:
             yield from _capturer_reponse(
-                _agent_groq(client_groq, messages_agent, outils_mcp, table_routage, agent_nom=agent_nom),
+                _agent_groq(client_groq, messages_agent, outils_mcp, table_routage, agent_nom=agent_nom,
+                            reasoning_effort=MODELES_AVEC_REASONING_EFFORT.get(GROQ_PRIMARY)),
                 reponse_accumulee,
             )
             evenement_lien_manquant = _completer_liens_manquants(reponse_accumulee, messages_agent)
