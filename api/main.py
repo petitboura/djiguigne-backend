@@ -50,6 +50,7 @@ from core.proactivite import verifier_relances_proactives
 from core.audit_programme import executer_audits_du_lundi
 from core.serveur_mcp_github import mcp_github
 from core.serveur_mcp_programme import mcp_programme
+from core.serveur_mcp_public import mcp_public
 from core.erreurs import erreur_api
 
 logging.basicConfig(level=logging.INFO)
@@ -125,7 +126,7 @@ async def _lifespan(app: FastAPI):
     # besoin de tourner pendant toute la durée de vie du process, sinon
     # streamable_http_app() renvoie une erreur "Task group is not
     # initialized" au premier appel d'outil.
-    async with mcp_generation.session_manager.run(), mcp_github.session_manager.run(), mcp_programme.session_manager.run():
+    async with mcp_generation.session_manager.run(), mcp_github.session_manager.run(), mcp_programme.session_manager.run(), mcp_public.session_manager.run():
         tache_planificateur = None
         tache_proactivite = None
         tache_audit_programme = asyncio.create_task(_boucle_planificateur_audit_programme())
@@ -158,6 +159,10 @@ app.mount("/mcp/generation", mcp_generation.streamable_http_app(stateless_http=T
 app.mount("/mcp/github", mcp_github.streamable_http_app(stateless_http=True, streamable_http_path="/"))
 # core/serveur_mcp_programme.py, monté de la même façon.
 app.mount("/mcp/programme", mcp_programme.streamable_http_app(stateless_http=True, streamable_http_path="/"))
+# core/serveur_mcp_public.py, monté de la même façon -- SEUL serveur MCP
+# destiné à être appelé depuis l'extérieur (client MCP tiers comme Claude),
+# les 3 précédents restent internes (appelés uniquement par notre backend).
+app.mount("/mcp/public", mcp_public.streamable_http_app(stateless_http=True, streamable_http_path="/"))
 
 # Domaines autorisés à appeler cette API. "http://localhost:3000" est le
 # port par defaut de `npm run dev` en Next.js, a garder tant que le
