@@ -1285,8 +1285,7 @@ def _router_outils(message_utilisateur, outils_disponibles, historique=None):
         "toi-même, tu décides seulement quels outils (parmi la liste "
         "ci-dessous) seraient utiles pour y répondre. Si aucun outil "
         "n'est pertinent (question générale, conversation normale, "
-        "salutation...), renvoie une liste vide -- ne force jamais un "
-        "outil par défaut ni \"au cas où\".\n\n"
+        "salutation...), renvoie une liste vide.\n\n"
         "IMPORTANT : diagramme, graphique/chart, carte/localisation, "
         "figure géométrique et mini-outil interactif (widget) NE SONT "
         "JAMAIS des outils de cette liste -- ce sont des blocs que le "
@@ -1304,18 +1303,6 @@ def _router_outils(message_utilisateur, outils_disponibles, historique=None):
         # où" sur une question triviale. Les exemples ci-dessous couvrent
         # explicitement calcul simple, connaissance générale stable et
         # salutation/conversation normale.
-        "IMPORTANT : ne suggère JAMAIS un outil pour une question à "
-        "laquelle le modèle principal peut répondre seul, avec certitude, "
-        "par simple raisonnement ou connaissance générale stable -- même "
-        "si un outil de la liste pourrait techniquement s'en servir. "
-        "Exemples qui DOIVENT renvoyer une liste vide : \"1+1\", "
-        "\"combien font 12 fois 15 ?\", \"quelle est la capitale de la "
-        "France ?\", \"explique-moi la photosynthèse\", \"salut, ça va ?\". "
-        "Réserve les outils aux cas où une information réelle et "
-        "vérifiable est nécessaire : donnée qui change dans le temps "
-        "(actualité, prix, météo...), contenu spécifique à récupérer "
-        "(fichier, page web, dépôt...), ou calcul non trivial qu'un humain "
-        "ne ferait pas de tête.\n\n"
         f"Outils disponibles :\n{catalogue}\n\n"
         f"{contexte}"
         f"Question de l'utilisateur : {message_utilisateur}\n\n"
@@ -1548,10 +1535,12 @@ def _construire_system_prompt(message_utilisateur, agent_id, user_id=None, longu
         system_final += (
             f"\n\nOUTIL(S) ACTIF(S) : {liste_lisible} "
             f"{'sont disponibles' if len(outils_forces) > 1 else 'est disponible'}, "
-            "sélectionné(s) via le bouton Outils. Utilise-les si pertinents -- leur "
-            "présence prime sur tes limitations par défaut, n'invente jamais un refus. "
-            "Appel via le vrai mécanisme API uniquement, jamais de pseudo-syntaxe en "
-            "texte (TOOL_CODE, nom_outil(...), nom_outil{...}, call:nom_outil{...})."
+            "présélectionné(s) par précaution -- leur présence ne t'oblige pas à les "
+            "appeler, ignore-les si tes connaissances suffisent déjà. Mais s'ils sont "
+            "vraiment utiles, utilise-les : leur présence prime alors sur tes "
+            "limitations par défaut, n'invente jamais un refus. Appel via le vrai "
+            "mécanisme API uniquement, jamais de pseudo-syntaxe en texte (TOOL_CODE, "
+            "nom_outil(...), nom_outil{...}, call:nom_outil{...})."
         )
     if not outils_forces:
         # Bouton Outils (2026-07-25, suite) : sans cette instruction, le
