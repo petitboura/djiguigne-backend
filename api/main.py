@@ -173,6 +173,23 @@ ORIGINES_AUTORISEES = [
     "http://localhost:3000",
     "https://app.djiguigne.com",
     "https://djiguign-ai.vercel.app",
+    # Classinus (29/09/2026, demande Bourama) :
+    # - "https://classinus.com" : absent jusqu'ici, alors que c'est le vrai
+    #   domaine de production. Signale par Claude en meme temps que le
+    #   correctif ci-dessous ; garde tel quel a la demande de Bourama.
+    # - "capacitor-electron://localhost" : origine du frontend Classinus
+    #   dans l'appli PC (canal en direct, Lot Q/R/S), qui appelle cette API
+    #   directement depuis le navigateur integre a Electron, sans serveur
+    #   Next.js intermediaire contrairement au web. C'est le schema/hote par
+    #   defaut du runtime @capawesome/capacitor-electron (protocole
+    #   personnalise enregistre avec le privilege "standard", qui lui donne
+    #   une vraie origine, contrairement a "null" pour un schema non
+    #   standard) confirme en lisant node_modules/@capawesome/capacitor-electron/dist/runtime/index.js
+    #   dans le depot classinus-frontend, pas suppose. Sans cette entree,
+    #   l'appli PC etait rejetee par CORS et tout ce qui dependait du
+    #   backend ne marchait pas (bouton du canal, journal...).
+    "https://classinus.com",
+    "capacitor-electron://localhost",
 ]
 
 # En plus des domaines fixes ci-dessus : Vercel donne une URL DIFFERENTE
