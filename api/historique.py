@@ -11,9 +11,11 @@ fait uniquement depuis core/main.py, au moment de chaque échange).
 """
 
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from api.auth import utilisateur_courant, supabase
@@ -218,6 +220,28 @@ def lister_fils_conversation(agent_id: str, utilisateur=Depends(utilisateur_cour
             )
         )
 
+    # Titres choisis par l'utilisateur (renommage), meme source que /fils.
+    try:
+        titres_perso = {
+            m["cle"]: m["titre_perso"]
+            for m in (
+                supabase.table("historique_fils_meta")
+                .select("cle, titre_perso")
+                .eq("user_id", utilisateur.id)
+                .eq("agent_id", agent_id)
+                .not_.is_("titre_perso", "null")
+                .execute()
+            ).data
+            or []
+        }
+    except Exception as e:
+        logging.error(f"ERREUR SUPABASE (lister_fils_conversation, titres perso) : {e}")
+        titres_perso = {}
+    for fil in resultat:
+        titre_perso = titres_perso.get(fil.conversation_id or "legacy")
+        if titre_perso:
+            fil.titre = titre_perso
+
     resultat.sort(key=lambda f: f.derniere_activite, reverse=True)
     return resultat
 
@@ -250,3 +274,281 @@ def obtenir_fil_conversation(agent_id: str, conversation_id: str, utilisateur=De
         raise erreur_api(500, "IMPOSSIBLE_DE_CHARGER_CETTE_CONVERSATION")
 
     return [MessageHistorique(**ligne) for ligne in lignes]
+
+
+# ---------------------------------------------------------------------------
+# Historique du chat : liste PAGINEE, epingler, renommer, supprimer
+# (demande Bourama, 01/10/2026). GET /{agent_id}/conversations ci-dessus
+# relit tous les messages et renvoie tous les fils d'un coup ; ces routes-ci
+# s'appuient sur la fonction SQL lister_fils_historique (voir la migration
+# 2026_10_01_historique_fils_epingles.sql) et ne renvoient qu'un paquet a la
+# fois. Un fil est designe par sa `cle` : son conversation_id, ou "legacy"
+# pour les lignes d'avant l'historique par conversation.
+# ---------------------------------------------------------------------------
+
+TAILLE_PAGE_PAR_DEFAUT = 20
+TAILLE_PAGE_MAX = 50
+LONGUEUR_MAX_TITRE_PERSO = 80
+
+
+class FilPage(BaseModel):
+    conversation_id: Optional[str]
+    cle: str
+    titre: str
+    derniere_activite: str
+    epingle: bool = False
+
+
+class CurseurFils(BaseModel):
+    avant_activite: str
+    avant_cle: str
+
+
+class PageFils(BaseModel):
+    # Rempli uniquement sur la premiere page (sans curseur) : les fils
+    # epingles sont peu nombreux et toujours affiches en haut.
+    epingles: List[FilPage]
+    fils: List[FilPage]
+    # None quand il n'y a plus rien a charger.
+    suivant: Optional[CurseurFils] = None
+
+
+class ModificationFil(BaseModel):
+    epingle: Optional[bool] = None
+    titre: Optional[str] = None
+
+
+def _fil_page_depuis_ligne(ligne: dict) -> FilPage:
+    cle = ligne["cle"]
+    titre = (ligne.get("titre_perso") or "").strip()
+    if not titre:
+        if cle == "legacy":
+            titre = "Avant l'historique par conversation"
+        else:
+            titre = (ligne.get("premier_message") or "Conversation sans titre").strip()
+            if len(titre) > LONGUEUR_MAX_TITRE:
+                titre = titre[:LONGUEUR_MAX_TITRE].rstrip() + "…"
+    return FilPage(
+        conversation_id=ligne.get("conversation_id"),
+        cle=cle,
+        titre=titre,
+        derniere_activite=ligne["derniere_activite"],
+        epingle=bool(ligne.get("epingle_le")),
+    )
+
+
+def _verifier_cle_fil(cle: str) -> None:
+    if cle == "legacy":
+        return
+    try:
+        uuid.UUID(cle)
+    except ValueError:
+        raise erreur_api(404, "FIL_INTROUVABLE")
+
+
+def _filtrer_fil(requete, cle: str):
+    if cle == "legacy":
+        return requete.is_("conversation_id", "null")
+    return requete.eq("conversation_id", cle)
+
+
+@router.get("/{agent_id}/fils", response_model=PageFils)
+def lister_fils_pagines(
+    agent_id: str,
+    limite: int = Query(TAILLE_PAGE_PAR_DEFAUT, ge=1, le=TAILLE_PAGE_MAX),
+    avant_activite: Optional[str] = None,
+    avant_cle: Optional[str] = None,
+    utilisateur=Depends(utilisateur_courant),
+):
+    """
+    Un paquet de `limite` fils non epingles, du plus recemment actif au plus
+    ancien. Sans curseur (premiere page), renvoie aussi tous les fils
+    epingles. Pour la page suivante, renvoyer `suivant` tel quel
+    (avant_activite + avant_cle).
+    """
+    if (avant_activite is None) != (avant_cle is None):
+        raise erreur_api(400, "IMPOSSIBLE_DE_CHARGER_L_HISTORIQUE")
+    premiere_page = avant_activite is None
+    try:
+        epingles = []
+        if premiere_page:
+            epingles = (
+                supabase.rpc(
+                    "lister_fils_historique",
+                    {"p_user": utilisateur.id, "p_agent": agent_id, "p_epingles": True},
+                ).execute()
+            ).data or []
+        # On demande un fil de plus que la page : s'il revient, il reste de
+        # quoi charger ; il n'est jamais renvoye au client.
+        parametres = {
+            "p_user": utilisateur.id,
+            "p_agent": agent_id,
+            "p_epingles": False,
+            "p_limite": limite + 1,
+        }
+        if not premiere_page:
+            parametres["p_avant_activite"] = avant_activite
+            parametres["p_avant_cle"] = avant_cle
+        lignes = (supabase.rpc("lister_fils_historique", parametres).execute()).data or []
+    except Exception as e:
+        logging.error(
+            f"ERREUR SUPABASE (lister_fils_pagines, user_id={utilisateur.id}, "
+            f"agent_id={agent_id}) : {e}"
+        )
+        raise erreur_api(500, "IMPOSSIBLE_DE_CHARGER_L_HISTORIQUE")
+
+    reste = len(lignes) > limite
+    page = lignes[:limite]
+    suivant = None
+    if reste and page:
+        derniere = page[-1]
+        suivant = CurseurFils(avant_activite=derniere["derniere_activite"], avant_cle=derniere["cle"])
+    return PageFils(
+        epingles=[_fil_page_depuis_ligne(ligne) for ligne in epingles],
+        fils=[_fil_page_depuis_ligne(ligne) for ligne in page],
+        suivant=suivant,
+    )
+
+
+@router.patch("/{agent_id}/fils/{cle}", response_model=FilPage)
+def modifier_fil(
+    agent_id: str,
+    cle: str,
+    modification: ModificationFil,
+    utilisateur=Depends(utilisateur_courant),
+):
+    """Epingler / desepingler (`epingle`) et/ou renommer (`titre`) un fil."""
+    _verifier_cle_fil(cle)
+    if modification.epingle is None and modification.titre is None:
+        raise erreur_api(400, "TITRE_FIL_INVALIDE")
+    titre = None
+    if modification.titre is not None:
+        titre = " ".join(modification.titre.split())
+        if not titre or len(titre) > LONGUEUR_MAX_TITRE_PERSO:
+            raise erreur_api(400, "TITRE_FIL_INVALIDE")
+
+    try:
+        existe = (
+            _filtrer_fil(
+                supabase.table("historique_conversations")
+                .select("id")
+                .eq("user_id", utilisateur.id)
+                .eq("agent_id", agent_id),
+                cle,
+            )
+            .limit(1)
+            .execute()
+        ).data
+        if not existe:
+            raise erreur_api(404, "FIL_INTROUVABLE")
+
+        ligne_meta = {
+            "user_id": utilisateur.id,
+            "agent_id": agent_id,
+            "cle": cle,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if modification.epingle is not None:
+            ligne_meta["epingle_le"] = (
+                datetime.now(timezone.utc).isoformat() if modification.epingle else None
+            )
+        if titre is not None:
+            ligne_meta["titre_perso"] = titre
+        # Un upsert qui ne mentionne qu'une des deux colonnes laisse l'autre
+        # intacte (PostgREST ne met a jour que les colonnes envoyees).
+        supabase.table("historique_fils_meta").upsert(
+            ligne_meta, on_conflict="user_id,agent_id,cle"
+        ).execute()
+
+        lignes = (
+            supabase.rpc(
+                "lister_fils_historique",
+                {"p_user": utilisateur.id, "p_agent": agent_id, "p_epingles": modification.epingle is True},
+            ).execute()
+        ).data or []
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(
+            f"ERREUR SUPABASE (modifier_fil, user_id={utilisateur.id}, "
+            f"agent_id={agent_id}, cle={cle}) : {e}"
+        )
+        raise erreur_api(500, "IMPOSSIBLE_DE_MODIFIER_LE_FIL")
+
+    # Quand le fil vient d'etre epingle, il est dans la liste des epingles ;
+    # sinon on relit simplement sa ligne de metadonnees pour repondre.
+    for ligne in lignes:
+        if ligne["cle"] == cle:
+            return _fil_page_depuis_ligne(ligne)
+    return _fil_apres_modification(utilisateur.id, agent_id, cle)
+
+
+def _fil_apres_modification(user_id: str, agent_id: str, cle: str) -> FilPage:
+    """Relit un fil precis (cas ou il n'est pas dans la liste des epingles)."""
+    meta = (
+        supabase.table("historique_fils_meta")
+        .select("epingle_le, titre_perso")
+        .eq("user_id", user_id)
+        .eq("agent_id", agent_id)
+        .eq("cle", cle)
+        .limit(1)
+        .execute()
+    ).data or [{}]
+    lignes = _filtrer_fil(
+        supabase.table("historique_conversations")
+        .select("role, content, created_at")
+        .eq("user_id", user_id)
+        .eq("agent_id", agent_id),
+        cle,
+    ).order("created_at").execute().data or []
+    premier = next((l["content"] for l in lignes if l["role"] == "user"), None)
+    return _fil_page_depuis_ligne(
+        {
+            "conversation_id": None if cle == "legacy" else cle,
+            "cle": cle,
+            "titre_perso": meta[0].get("titre_perso"),
+            "premier_message": premier,
+            "derniere_activite": lignes[-1]["created_at"] if lignes else datetime.now(timezone.utc).isoformat(),
+            "epingle_le": meta[0].get("epingle_le"),
+        }
+    )
+
+
+@router.delete("/{agent_id}/fils/{cle}")
+def supprimer_fil(agent_id: str, cle: str, utilisateur=Depends(utilisateur_courant)):
+    """
+    Supprime DEFINITIVEMENT un fil : tous ses messages (les retours
+    feedback_messages liés partent avec, ON DELETE CASCADE), les reponses
+    de QCM de ce fil et sa ligne de metadonnees. Irreversible.
+    Les signalements aux enseignants (table signalements) ne sont PAS
+    touches : ils servent a la supervision pedagogique.
+    """
+    _verifier_cle_fil(cle)
+    try:
+        supprimes = (
+            _filtrer_fil(
+                supabase.table("historique_conversations")
+                .delete()
+                .eq("user_id", utilisateur.id)
+                .eq("agent_id", agent_id),
+                cle,
+            ).execute()
+        ).data or []
+        if not supprimes:
+            raise erreur_api(404, "FIL_INTROUVABLE")
+        if cle != "legacy":
+            supabase.table("historique_reponses_qcm").delete().eq(
+                "user_id", utilisateur.id
+            ).eq("conversation_id", cle).execute()
+        supabase.table("historique_fils_meta").delete().eq("user_id", utilisateur.id).eq(
+            "agent_id", agent_id
+        ).eq("cle", cle).execute()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(
+            f"ERREUR SUPABASE (supprimer_fil, user_id={utilisateur.id}, "
+            f"agent_id={agent_id}, cle={cle}) : {e}"
+        )
+        raise erreur_api(500, "IMPOSSIBLE_DE_SUPPRIMER_LE_FIL")
+    return {"ok": True, "messages_supprimes": len(supprimes)}
